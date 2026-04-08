@@ -286,3 +286,24 @@ async def mcp_manifest():
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "CliniqBridge", "timestamp": datetime.utcnow().isoformat()}
+
+# ─────────────────────────────────────────────
+# REST endpoints for direct browser testing
+# ─────────────────────────────────────────────
+
+@app.get("/tools/get_patient_summary")
+async def rest_patient_summary(patient_id: str, fhir_base_url: Optional[str] = None):
+    return await tool_get_patient_summary({"patient_id": patient_id, "fhir_base_url": fhir_base_url or DEFAULT_FHIR_BASE}, {})
+
+@app.get("/tools/get_conditions")
+async def rest_conditions(patient_id: str, fhir_base_url: Optional[str] = None):
+    return await tool_get_conditions({"patient_id": patient_id, "fhir_base_url": fhir_base_url or DEFAULT_FHIR_BASE}, {})
+
+@app.get("/tools/get_medications")
+async def rest_medications(patient_id: str, fhir_base_url: Optional[str] = None):
+    return await tool_get_medications({"patient_id": patient_id, "fhir_base_url": fhir_base_url or DEFAULT_FHIR_BASE}, {})
+
+@app.get("/tools/get_encounters")
+async def rest_encounters(patient_id: str, fhir_base_url: Optional[str] = None):
+    return await tool_get_encounters({"patient_id": patient_id, "fhir_base_url": fhir_base_url or DEFAULT_FHIR_BASE}, {})
+
