@@ -1,10 +1,9 @@
 """
 CliniqBridge - MCP Server (JSON-RPC 2.0 compliant)
-FHIR R4 + SHARP Context Compliant
-Compatible with Prompt Opinion platform
+Prompt Opinion FHIR Context Extension Compliant
 """
 
-from fastapi import FastAPI, Header, Request
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import httpx
@@ -74,6 +73,10 @@ TOOLS = [
     }
 ]
 
+# ─────────────────────────────────────────────
+# FHIR Helper
+# ─────────────────────────────────────────────
+
 async def fhir_get(path: str, fhir_base: str, token: Optional[str] = None):
     headers = {"Accept": "application/fhir+json"}
     if token:
@@ -85,12 +88,17 @@ async def fhir_get(path: str, fhir_base: str, token: Optional[str] = None):
             return {"error": f"FHIR error {response.status_code}", "url": url}
         return response.json()
 
-async def tool_get_patient_summary(params: dict) -> dict:
-    pid = params.get("patient_id")
-    fhir_base = params.get("fhir_base_url", DEFAULT_FHIR_BASE)
+# ─────────────────────────────────────────────
+# Tool Implementations
+# ─────────────────────────────────────────────
+
+async def tool_get_patient_summary(params: dict, req_headers: dict) -> dict:
+    pid = params.get("patient_id") or req_headers.get("x-patient-id")
+    fhir_base = params.get("fhir_base_url") or req_headers.get("x-fhir-server-url") or DEFAULT_FHIR_BASE
+    token = req_headers.get("x-fhir-access-token")
     if not pid:
         return {"error": "patient_id is required"}
-    data = await fhir_get(f"Patient/{pid}", fhir_base)
+    data = await fhir_get(f"Patient/{pid}", fhir_base, token)
     if "error" in data:
         return data
     name = "Unknown"
@@ -113,12 +121,13 @@ async def tool_get_patient_summary(params: dict) -> dict:
         "active": data.get("active", True)
     }
 
-async def tool_get_conditions(params: dict) -> dict:
-    pid = params.get("patient_id")
-    fhir_base = params.get("fhir_base_url", DEFAULT_FHIR_BASE)
+async def tool_get_conditions(params: dict, req_headers: dict) -> dict:
+    pid = params.get("patient_id") or req_headers.get("x-patient-id")
+    fhir_base = params.get("fhir_base_url") or req_headers.get("x-fhir-server-url") or DEFAULT_FHIR_BASE
+    token = req_headers.get("x-fhir-access-token")
     if not pid:
         return {"error": "patient_id is required"}
-    data = await fhir_get(f"Condition?patient={pid}&clinical-status=active&_sort=-onset-date&_count=20", fhir_base)
+    data = await fhir_get(f"Condition?patient={pid}&clinical-status=active&_sort=-onset-date&_count=20", fhir_base, token)
     if "error" in data:
         return data
     conditions = []
@@ -131,12 +140,13 @@ async def tool_get_conditions(params: dict) -> dict:
         conditions.append({"condition": display, "onset": onset})
     return {"patient_id": pid, "count": len(conditions), "conditions": conditions or [{"condition": "No active conditions found"}]}
 
-async def tool_get_medications(params: dict) -> dict:
-    pid = params.get("patient_id")
-    fhir_base = params.get("fhir_base_url", DEFAULT_FHIR_BASE)
+async def tool_get_medications(params: dict, req_headers: dict) -> dict:
+    pid = params.get("patient_id") or req_headers.get("x-patient-id")
+    fhir_base = params.get("fhir_base_url") or req_headers.get("x-fhir-server-url") or DEFAULT_FHIR_BASE
+    token = req_headers.get("x-fhir-access-token")
     if not pid:
         return {"error": "patient_id is required"}
-    data = await fhir_get(f"MedicationRequest?patient={pid}&status=active&_count=20", fhir_base)
+    data = await fhir_get(f"MedicationRequest?patient={pid}&status=active&_count=20", fhir_base, token)
     if "error" in data:
         return data
     medications = []
@@ -150,12 +160,13 @@ async def tool_get_medications(params: dict) -> dict:
         medications.append({"medication": name, "dosage": dosage, "authored_on": resource.get("authoredOn", "Unknown")})
     return {"patient_id": pid, "count": len(medications), "medications": medications or [{"medication": "No active medications found"}]}
 
-async def tool_get_encounters(params: dict) -> dict:
-    pid = params.get("patient_id")
-    fhir_base = params.get("fhir_base_url", DEFAULT_FHIR_BASE)
+async def tool_get_encounters(params: dict, req_headers: dict) -> dict:
+    pid = params.get("patient_id") or req_headers.get("x-patient-id")
+    fhir_base = params.get("fhir_base_url") or req_headers.get("x-fhir-server-url") or DEFAULT_FHIR_BASE
+    token = req_headers.get("x-fhir-access-token")
     if not pid:
         return {"error": "patient_id is required"}
-    data = await fhir_get(f"Encounter?patient={pid}&_sort=-date&_count=10", fhir_base)
+    data = await fhir_get(f"Encounter?patient={pid}&_sort=-date&_count=10", fhir_base, token)
     if "error" in data:
         return data
     encounters = []
@@ -168,7 +179,11 @@ async def tool_get_encounters(params: dict) -> dict:
         encounters.append({"encounter_type": enc_type, "date": period.get("start", "Unknown"), "status": resource.get("status", "unknown")})
     return {"patient_id": pid, "count": len(encounters), "encounters": encounters or [{"encounter_type": "No encounters found"}]}
 
-async def handle_jsonrpc(body: dict) -> dict:
+# ─────────────────────────────────────────────
+# JSON-RPC 2.0 Dispatcher
+# ─────────────────────────────────────────────
+
+async def handle_jsonrpc(body: dict, req_headers: dict) -> dict:
     jsonrpc_id = body.get("id")
     method = body.get("method", "")
     params = body.get("params", {})
@@ -179,10 +194,16 @@ async def handle_jsonrpc(body: dict) -> dict:
     def err(code, message):
         return {"jsonrpc": "2.0", "id": jsonrpc_id, "error": {"code": code, "message": message}}
 
+    # ── MCP Handshake with Prompt Opinion FHIR extension ──
     if method == "initialize":
         return ok({
             "protocolVersion": "2024-11-05",
-            "capabilities": {"tools": {}},
+            "capabilities": {
+                "tools": {},
+                "extensions": {
+                    "ai.promptopinion/fhir-context": {}
+                }
+            },
             "serverInfo": {"name": "CliniqBridge", "version": "1.0.0"}
         })
 
@@ -203,32 +224,52 @@ async def handle_jsonrpc(body: dict) -> dict:
         }
         if tool_name not in tool_map:
             return err(-32601, f"Tool not found: {tool_name}")
-        result = await tool_map[tool_name](tool_params)
+        result = await tool_map[tool_name](tool_params, req_headers)
         return ok({"content": [{"type": "text", "text": str(result)}], "result": result})
 
     return err(-32601, f"Method not found: {method}")
 
+# ─────────────────────────────────────────────
+# Routes — POST on /, /mcp, and /mcp/ all handled
+# ─────────────────────────────────────────────
+
+async def process_request(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}})
+    # Pass lowercase headers to tools for SHARP/FHIR context
+    req_headers = {k.lower(): v for k, v in request.headers.items()}
+    result = await handle_jsonrpc(body, req_headers)
+    return JSONResponse(result)
+
 @app.get("/")
 async def root():
-    return {"name": "CliniqBridge", "version": "1.0.0", "description": "MCP server for FHIR patient summary and history retrieval", "sharp_compliant": True, "tools": [t["name"] for t in TOOLS]}
+    return {
+        "name": "CliniqBridge",
+        "version": "1.0.0",
+        "description": "MCP server for FHIR patient summary and history retrieval",
+        "sharp_compliant": True,
+        "prompt_opinion_extension": "ai.promptopinion/fhir-context",
+        "tools": [t["name"] for t in TOOLS]
+    }
 
 @app.post("/")
 async def root_post(request: Request):
-    try:
-        body = await request.json()
-    except Exception:
-        return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}})
-    result = await handle_jsonrpc(body)
-    return JSONResponse(result)
+    return await process_request(request)
+
+@app.get("/mcp")
+async def mcp_get(request: Request):
+    return JSONResponse({
+        "name": "CliniqBridge",
+        "version": "1.0.0",
+        "description": "MCP server for FHIR patient summary and history retrieval",
+        "tools": [t["name"] for t in TOOLS]
+    })
 
 @app.post("/mcp")
-async def mcp_endpoint(request: Request):
-    try:
-        body = await request.json()
-    except Exception:
-        return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}})
-    result = await handle_jsonrpc(body)
-    return JSONResponse(result)
+async def mcp_post(request: Request):
+    return await process_request(request)
 
 @app.get("/.well-known/mcp.json")
 async def mcp_manifest():
@@ -238,7 +279,7 @@ async def mcp_manifest():
         "description": "Retrieve structured patient summaries and clinical history from FHIR R4 servers.",
         "endpoint": "/mcp",
         "transport": "http",
-        "sharp": {"compliant": True, "context_headers": ["x-patient-id", "x-fhir-base-url", "x-fhir-token"]},
+        "extensions": {"ai.promptopinion/fhir-context": {}},
         "tools": TOOLS
     }
 
