@@ -1,28 +1,42 @@
 """
-CliniqBridge - MCP Server (JSON-RPC 2.0 compliant)
+CliniqBridge - MCP Server (JSON-RPC 2.0 compliant, Streamable HTTP, spec 2025-11-25)
 Prompt Opinion FHIR Context Extension Compliant
-Updated for MaternaFlow - UiPath AgentHack 2026
+Part of the MaternaVoice project (Amazon Developer Hackathon - Alexa+ track)
 """
- 
+
+import json
+from typing import Optional
+from datetime import datetime
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import httpx
-from typing import Optional
-from datetime import datetime
- 
-app = FastAPI(title="CliniqBridge MCP Server", version="1.1.0")
- 
+
+app = FastAPI(title="CliniqBridge MCP Server", version="1.1.1")
+
+# --------------------------------------------------------------------------
+# CORS / Origin validation
+# --------------------------------------------------------------------------
+# Replace with the real origin(s) your simulated-host web app / MCP Inspector
+# will call from. Wildcard origins are not acceptable for a spec-compliant
+# Streamable HTTP MCP server.
+ALLOWED_ORIGINS = [
+    "https://cliniqbridge.onrender.com",
+    "http://localhost:8080",   # local web_host / MCP Inspector during dev
+    "http://127.0.0.1:8080",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["POST", "GET"],
     allow_headers=["*"],
 )
- 
+
 DEFAULT_FHIR_BASE = "https://hapi.fhir.org/baseR4"
- 
+
 TOOLS = [
     {
         "name": "get_patient_summary",
@@ -103,11 +117,11 @@ TOOLS = [
         }
     }
 ]
- 
-# -------------------------------------------
+
+# --------------------------------------------------------------------------
 # FHIR Helpers
-# -------------------------------------------
- 
+# --------------------------------------------------------------------------
+
 async def fhir_get(path: str, fhir_base: str, token: Optional[str] = None):
     headers = {"Accept": "application/fhir+json"}
     if token:
@@ -118,7 +132,8 @@ async def fhir_get(path: str, fhir_base: str, token: Optional[str] = None):
         if response.status_code not in [200, 201]:
             return {"error": f"FHIR error {response.status_code}", "url": url}
         return response.json()
- 
+
+
 async def fhir_post(path: str, fhir_base: str, body: dict, token: Optional[str] = None):
     headers = {"Content-Type": "application/fhir+json", "Accept": "application/fhir+json"}
     if token:
@@ -129,11 +144,11 @@ async def fhir_post(path: str, fhir_base: str, body: dict, token: Optional[str] 
         if response.status_code not in [200, 201]:
             return {"error": f"FHIR error {response.status_code}", "url": url}
         return response.json()
- 
-# -------------------------------------------
+
+# --------------------------------------------------------------------------
 # Tool Implementations
-# -------------------------------------------
- 
+# --------------------------------------------------------------------------
+
 async def tool_get_patient_summary(params: dict, req_headers: dict) -> dict:
     pid = params.get("patient_id") or req_headers.get("x-patient-id")
     fhir_base = params.get("fhir_base_url") or req_headers.get("x-fhir-server-url") or DEFAULT_FHIR_BASE
@@ -162,8 +177,8 @@ async def tool_get_patient_summary(params: dict, req_headers: dict) -> dict:
         "address": address,
         "active": data.get("active", True)
     }
- 
- 
+
+
 async def tool_get_conditions(params: dict, req_headers: dict) -> dict:
     pid = params.get("patient_id") or req_headers.get("x-patient-id")
     fhir_base = params.get("fhir_base_url") or req_headers.get("x-fhir-server-url") or DEFAULT_FHIR_BASE
@@ -182,8 +197,8 @@ async def tool_get_conditions(params: dict, req_headers: dict) -> dict:
         onset = resource.get("onsetDateTime", resource.get("recordedDate", "Unknown"))
         conditions.append({"condition": display, "onset": onset})
     return {"patient_id": pid, "count": len(conditions), "conditions": conditions or [{"condition": "No active conditions found"}]}
- 
- 
+
+
 async def tool_get_medications(params: dict, req_headers: dict) -> dict:
     pid = params.get("patient_id") or req_headers.get("x-patient-id")
     fhir_base = params.get("fhir_base_url") or req_headers.get("x-fhir-server-url") or DEFAULT_FHIR_BASE
@@ -203,8 +218,8 @@ async def tool_get_medications(params: dict, req_headers: dict) -> dict:
         dosage = dosage_list[0].get("text", "See instructions") if dosage_list else "See instructions"
         medications.append({"medication": name, "dosage": dosage, "authored_on": resource.get("authoredOn", "Unknown")})
     return {"patient_id": pid, "count": len(medications), "medications": medications or [{"medication": "No active medications found"}]}
- 
- 
+
+
 async def tool_get_encounters(params: dict, req_headers: dict) -> dict:
     pid = params.get("patient_id") or req_headers.get("x-patient-id")
     fhir_base = params.get("fhir_base_url") or req_headers.get("x-fhir-server-url") or DEFAULT_FHIR_BASE
@@ -223,8 +238,8 @@ async def tool_get_encounters(params: dict, req_headers: dict) -> dict:
         period = resource.get("period", {})
         encounters.append({"encounter_type": enc_type, "date": period.get("start", "Unknown"), "status": resource.get("status", "unknown")})
     return {"patient_id": pid, "count": len(encounters), "encounters": encounters or [{"encounter_type": "No encounters found"}]}
- 
- 
+
+
 async def tool_get_observations(params: dict, req_headers: dict) -> dict:
     pid = params.get("patient_id") or req_headers.get("x-patient-id")
     fhir_base = params.get("fhir_base_url") or req_headers.get("x-fhir-server-url") or DEFAULT_FHIR_BASE
@@ -254,7 +269,7 @@ async def tool_get_observations(params: dict, req_headers: dict) -> dict:
         observations.append({
             "observation": display,
             "value": f"{value} {unit}".strip(),
-            "reference_range": f"{low}–{high} {unit}".strip() if low and high else "N/A",
+            "reference_range": f"{low}\u2013{high} {unit}".strip() if low and high else "N/A",
             "abnormal": abnormal,
             "date": resource.get("effectiveDateTime", "Unknown"),
             "status": resource.get("status", "unknown")
@@ -265,8 +280,8 @@ async def tool_get_observations(params: dict, req_headers: dict) -> dict:
         "count": len(observations),
         "observations": observations or [{"observation": "No observations found"}]
     }
- 
- 
+
+
 async def tool_create_observation(params: dict, req_headers: dict) -> dict:
     pid = params.get("patient_id") or req_headers.get("x-patient-id")
     fhir_base = params.get("fhir_base_url") or req_headers.get("x-fhir-server-url") or DEFAULT_FHIR_BASE
@@ -313,62 +328,67 @@ async def tool_create_observation(params: dict, req_headers: dict) -> dict:
         "value": f"{params.get('value')} {params.get('unit', '')}".strip(),
         "recorded_at": datetime.utcnow().isoformat()
     }
- 
-# -------------------------------------------
-# JSON-RPC 2.0 Dispatcher
-# -------------------------------------------
- 
+
+TOOL_MAP = {
+    "get_patient_summary": tool_get_patient_summary,
+    "get_conditions": tool_get_conditions,
+    "get_medications": tool_get_medications,
+    "get_encounters": tool_get_encounters,
+    "get_observations": tool_get_observations,
+    "create_observation": tool_create_observation,
+}
+
+# --------------------------------------------------------------------------
+# JSON-RPC 2.0 Dispatcher (spec 2025-11-25)
+# --------------------------------------------------------------------------
+
 async def handle_jsonrpc(body: dict, req_headers: dict) -> dict:
     jsonrpc_id = body.get("id")
     method = body.get("method", "")
     params = body.get("params", {})
- 
+
     def ok(result):
         return {"jsonrpc": "2.0", "id": jsonrpc_id, "result": result}
- 
+
     def err(code, message):
         return {"jsonrpc": "2.0", "id": jsonrpc_id, "error": {"code": code, "message": message}}
- 
+
     if method == "initialize":
         return ok({
-            "protocolVersion": "2024-11-05",
+            "protocolVersion": "2025-11-25",
             "capabilities": {
                 "tools": {},
                 "extensions": {
                     "ai.promptopinion/fhir-context": {}
                 }
             },
-            "serverInfo": {"name": "CliniqBridge", "version": "1.1.0"}
+            "serverInfo": {"name": "CliniqBridge", "version": "1.1.1"}
         })
- 
+
     if method in ["notifications/initialized", "ping"]:
         return ok({})
- 
+
     if method == "tools/list":
         return ok({"tools": TOOLS})
- 
+
     if method == "tools/call":
         tool_name = params.get("name")
         tool_params = params.get("arguments", {})
-        tool_map = {
-            "get_patient_summary": tool_get_patient_summary,
-            "get_conditions": tool_get_conditions,
-            "get_medications": tool_get_medications,
-            "get_encounters": tool_get_encounters,
-            "get_observations": tool_get_observations,
-            "create_observation": tool_create_observation,
-        }
-        if tool_name not in tool_map:
+        if tool_name not in TOOL_MAP:
             return err(-32601, f"Tool not found: {tool_name}")
-        result = await tool_map[tool_name](tool_params, req_headers)
-        return ok({"content": [{"type": "text", "text": str(result)}], "result": result})
- 
+        result = await TOOL_MAP[tool_name](tool_params, req_headers)
+        is_error = isinstance(result, dict) and "error" in result
+        return ok({
+            "content": [{"type": "text", "text": json.dumps(result)}],
+            "isError": is_error
+        })
+
     return err(-32601, f"Method not found: {method}")
- 
-# -------------------------------------------
+
+# --------------------------------------------------------------------------
 # Routes
-# -------------------------------------------
- 
+# --------------------------------------------------------------------------
+
 async def process_request(request: Request):
     try:
         body = await request.json()
@@ -377,35 +397,40 @@ async def process_request(request: Request):
     req_headers = {k.lower(): v for k, v in request.headers.items()}
     result = await handle_jsonrpc(body, req_headers)
     return JSONResponse(result)
- 
+
+
 @app.get("/")
 async def root():
     return {
         "name": "CliniqBridge",
-        "version": "1.1.0",
+        "version": "1.1.1",
         "description": "MCP server for FHIR patient summary, history retrieval, and observation recording",
         "sharp_compliant": True,
         "prompt_opinion_extension": "ai.promptopinion/fhir-context",
         "tools": [t["name"] for t in TOOLS]
     }
- 
+
+
 @app.post("/")
 async def root_post(request: Request):
     return await process_request(request)
- 
+
+
 @app.get("/mcp")
 async def mcp_get(request: Request):
     return JSONResponse({
         "name": "CliniqBridge",
-        "version": "1.1.0",
+        "version": "1.1.1",
         "description": "MCP server for FHIR patient summary, history retrieval, and observation recording",
         "tools": [t["name"] for t in TOOLS]
     })
- 
+
+
 @app.post("/mcp")
 async def mcp_post(request: Request):
     return await process_request(request)
- 
+
+
 @app.get("/.well-known/mcp.json")
 async def mcp_manifest():
     return {
@@ -413,12 +438,12 @@ async def mcp_manifest():
         "name": "CliniqBridge",
         "description": "Retrieve structured patient summaries, clinical history, and record observations from FHIR R4 servers.",
         "endpoint": "/mcp",
-        "transport": "http",
+        "transport": "streamable-http",
         "extensions": {"ai.promptopinion/fhir-context": {}},
         "tools": TOOLS
     }
- 
+
+
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "CliniqBridge", "version": "1.1.0", "timestamp": datetime.utcnow().isoformat()}
- 
+    return {"status": "ok", "service": "CliniqBridge", "version": "1.1.1", "timestamp": datetime.utcnow().isoformat()}
